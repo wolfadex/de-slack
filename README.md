@@ -6,7 +6,7 @@ A proof of concept decentrailized chat app
 
 - Run `yarn` to install all JavaScript dependencies
 - Run `yarn dev` to start up the dev server
-- Navigate to `localhost:8000/server` to start the chat server
+- Navigate to `localhost:8000/server.html` to start the chat server
 - Navigate to `localhost:8000` to start a chat client
 
 

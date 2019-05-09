@@ -6,7 +6,9 @@
   "author": "Wolfgang Schuster <wolfadex@gmail.com>",
   "license": "MIT",
   "scripts": {
-    "dev": "webpack-dev-server --env.isDev=true"
+    "dev": "webpack-dev-server --env.isDev=true",
+    "build": "webpack --env.isDev=true",
+    "clean": "rm -rf ./public"
   },
   "devDependencies": {
     "@babel/core": "^7.4.4",

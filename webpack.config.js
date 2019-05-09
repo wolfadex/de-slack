@@ -30,7 +30,12 @@ module.exports = function config({ isDev = false } = {}) {
         {
           exclude: /node_modules|elm-stuff/,
           test: /\.elm$/,
-          use: 'elm-webpack-loader',
+          use: {
+            loader: 'elm-webpack-loader',
+            options: {
+              optimize: !isDev,
+            },
+          },
         },
       ],
     },
@@ -40,7 +45,7 @@ module.exports = function config({ isDev = false } = {}) {
       }),
       new HtmlWebpackPlugin({
         chunks: ['server'],
-        filename: 'server',
+        filename: 'server.html',
       }),
     ],
     devServer: {
