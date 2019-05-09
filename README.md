@@ -1,5 +1,7 @@
 # De-Slack
 
+[![Netlify Status](https://api.netlify.com/api/v1/badges/1d10038a-fe84-464e-9e8d-b6cab7de21b4/deploy-status)](https://app.netlify.com/sites/de-slack/deploys)
+
 A proof of concept decentrailized chat app
 
 ## Dev
