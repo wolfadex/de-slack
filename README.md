@@ -17,14 +17,17 @@ A proof of concept decentrailized chat app
 - Copy the address from the server
 - Paste the server's address into the input on the client and press `Enter`/`Return`
 - This connects the client to the server
+- New users must sign up (existing user login is in progress)
+- The server must approve the sign up
 - Connect as many clients as you want
 - Fill in the message input and press `Enter`/`Return` to send the message
 
 ## Todo
 
-- [ ] Test outside of localhost
+- [x] Test outside of localhost
+- [x] Sign-up
+- [ ] Login
 - [ ] Customize username
-- [ ] "login"
 - [ ] Storing state of server
 - [ ] Exporting server data
 - [ ] Importing server data

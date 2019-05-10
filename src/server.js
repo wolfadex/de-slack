@@ -25,5 +25,11 @@ server.on('left', function(address) {
 
 server.register('message', function(address, message, callback) {
   callback && callback({ placeholder: 'workAround' });
+  console.log('message', message);
   app.ports.clientMessage.send({ address, message });
+});
+server.register('authenticate', function(address, body, callback) {
+  callback && callback({});
+  console.log('Authenticate', body);
+  app.ports.clientAuthenticate.send({ address, body });
 });

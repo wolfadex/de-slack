@@ -3,6 +3,17 @@
 ---
 ---
 
+## 0.2.0
+
+---
+
+- Super basic sign up
+- Mocked out logging in
+- Changed User object to be ready for custom names
+
+<br />
+<br />
+
 ## 0.1.0
 
 ---

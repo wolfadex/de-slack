@@ -2,11 +2,15 @@ port module Server exposing (main)
 
 import Browser exposing (Document)
 import Chat exposing (Address, Channel, ChannelName, Channels, Message, User)
+import Crypto.Hash exposing (sha512)
 import Dict exposing (Dict)
 import Html.Styled as Html exposing (Html)
+import Html.Styled.Attributes as Attrs
+import Html.Styled.Events as Events
 import Html.Styled.Keyed as HtmlKeyed
 import Json.Decode as Decode exposing (Decoder)
 import Json.Encode as Encode exposing (Value)
+import Process
 import Set exposing (Set)
 import Task
 import Time exposing (Posix)
@@ -29,19 +33,35 @@ main =
 type alias Model =
     { address : Maybe String
     , connections : Int
-    , users : Dict Address User
+    , users : Dict Email User
     , channels : Channels
     , logs : List String
+    , clients : Dict Address Client
     }
+
+
+type alias Email =
+    String
+
+
+type Client
+    = Unauthenticated
+    | SignedUp User
+    | Authenticated User
 
 
 type Msg
     = SetAddress String
     | SetConnectionCount Int
     | ClientSeen Address
-    | AddMessage { user : Address, channelName : ChannelName, content : String }
-    | CommitMessage { user : Address, channelName : ChannelName, content : String, time : Posix }
+    | AddMessage { address : Address, channelName : ChannelName, content : String }
+    | CommitMessage { address : Address, user : User, channelName : ChannelName, content : String, time : Posix }
     | ClientMessageError String
+    | AuthenticationError
+    | AuthenticateLogin { address : Address, email : String, password : String }
+    | AuthenticateSignUp { address : Address, email : String, password : String }
+    | ApproveUserSignUp Address Email
+    | DelayedUserJoinChannel Address User
 
 
 
@@ -61,6 +81,7 @@ init _ =
                 , activeUsers = Set.empty
                 }
       , logs = []
+      , clients = Dict.empty
       }
     , Cmd.none
     )
@@ -77,6 +98,7 @@ subscriptions model =
         , connectionCountChange SetConnectionCount
         , clientSeen ClientSeen
         , clientMessage handleClientMessage
+        , clientAuthenticate handleClientAuth
         ]
 
 
@@ -111,10 +133,83 @@ decodeClientMessage : Decoder Msg
 decodeClientMessage =
     Decode.map2
         (\address ( channelName, content ) ->
-            AddMessage { user = address, channelName = channelName, content = content }
+            AddMessage { address = address, channelName = channelName, content = content }
         )
-        (Decode.field "address" Decode.string)
+        (Decode.field "address" decodeAddress)
         (Decode.field "message" Chat.decodeUserMessage)
+
+
+decodeAddress : Decoder Address
+decodeAddress =
+    Decode.string
+
+
+port clientAuthenticate : (Value -> msg) -> Sub msg
+
+
+handleClientAuth : Value -> Msg
+handleClientAuth value =
+    case Decode.decodeValue decodeClientAuth value of
+        Ok msg ->
+            msg
+
+        Err err ->
+            AuthenticationError
+
+
+decodeClientAuth : Decoder Msg
+decodeClientAuth =
+    Decode.field "address" Decode.string
+        |> Decode.andThen decodeClientAuthBody
+
+
+decodeClientAuthBody : Address -> Decoder Msg
+decodeClientAuthBody address =
+    Decode.field "body" (decodeClientAuthBodyHelper address)
+
+
+decodeClientAuthBodyHelper : Address -> Decoder Msg
+decodeClientAuthBodyHelper address =
+    Decode.field "event" Decode.string
+        |> Decode.andThen (decodeClientAuthHelper address)
+
+
+decodeClientAuthHelper : Address -> String -> Decoder Msg
+decodeClientAuthHelper address event =
+    case event of
+        "authLogin" ->
+            decodeLogin address
+
+        "authSignUp" ->
+            decodeSignUp address
+
+        _ ->
+            Decode.fail <| "Unknown authentication event: " ++ event
+
+
+decodeLogin : Address -> Decoder Msg
+decodeLogin address =
+    Decode.map2
+        (\email password ->
+            AuthenticateLogin { address = address, email = email, password = password }
+        )
+        (Decode.field "email" Decode.string)
+        (Decode.field "password" Decode.string)
+
+
+decodeSignUp : Address -> Decoder Msg
+decodeSignUp address =
+    Decode.map3
+        (\email password passwordVerify ->
+            if password == passwordVerify then
+                AuthenticateSignUp { address = address, email = email, password = password }
+
+            else
+                AuthenticationError
+        )
+        (Decode.field "email" Decode.string)
+        (Decode.field "password" Decode.string)
+        (Decode.field "passwordVerify" Decode.string)
 
 
 
@@ -168,6 +263,18 @@ broadcastMessage { name, activeUsers } message =
         |> Cmd.batch
 
 
+notifyUserAuthenticated : Address -> Cmd msg
+notifyUserAuthenticated address =
+    Encode.object
+        [ ( "address", Encode.string address )
+        , ( "message"
+          , Encode.object
+                [ ( "event", Encode.string "authenticated" ) ]
+          )
+        ]
+        |> sendMessageToAddress
+
+
 
 ---- UPDATE ----
 
@@ -182,27 +289,102 @@ update msg model =
             ( { model | connections = count }, Cmd.none )
 
         ClientSeen address ->
+            ( { model | clients = Dict.insert address Unauthenticated model.clients }
+            , Cmd.none
+            )
+
+        AuthenticationError ->
+            ( model, Cmd.none )
+
+        AuthenticateLogin { address, email, password } ->
+            ( model, Cmd.none )
+
+        AuthenticateSignUp { address, email, password } ->
+            case Dict.get email model.users of
+                Nothing ->
+                    case Dict.get address model.clients of
+                        Nothing ->
+                            ( model, Cmd.none )
+
+                        Just clientState ->
+                            case clientState of
+                                Unauthenticated ->
+                                    ( { model
+                                        | clients =
+                                            Dict.insert
+                                                address
+                                                (SignedUp { name = address, email = email, password = sha512 password })
+                                                model.clients
+                                      }
+                                    , Cmd.none
+                                    )
+
+                                _ ->
+                                    ( model, Cmd.none )
+
+                Just _ ->
+                    ( model, Cmd.none )
+
+        ApproveUserSignUp address email ->
+            case Dict.get address model.clients of
+                Nothing ->
+                    ( model, Cmd.none )
+
+                Just client ->
+                    case client of
+                        SignedUp user ->
+                            ( { model
+                                | clients = Dict.insert address (Authenticated user) model.clients
+                              }
+                            , Cmd.batch
+                                [ notifyUserAuthenticated address
+                                , Task.perform (\_ -> DelayedUserJoinChannel address user) (Process.sleep 0)
+                                ]
+                            )
+
+                        _ ->
+                            ( model, Cmd.none )
+
+        DelayedUserJoinChannel address user ->
             let
                 ( updatedChannels, updateUsersCmd ) =
                     userJoinChannel model.channels address "general"
             in
             ( { model
-                | users = createUser model.users address
+                | users = createUser model.users user
                 , channels = updatedChannels
               }
             , updateUsersCmd
             )
 
-        AddMessage { user, channelName, content } ->
-            ( model
-            , Task.perform
-                (\time ->
-                    CommitMessage { user = user, channelName = channelName, content = content, time = time }
-                )
-                Time.now
-            )
+        AddMessage { address, channelName, content } ->
+            case Dict.get address model.clients of
+                Just (Authenticated user) ->
+                    ( model
+                    , Task.perform
+                        (\time ->
+                            CommitMessage { address = address, user = user, channelName = channelName, content = content, time = time }
+                        )
+                        Time.now
+                    )
 
-        CommitMessage { user, channelName, content, time } ->
+                Nothing ->
+                    if address == "automated" then
+                        ( model
+                        , Task.perform
+                            (\time ->
+                                CommitMessage { address = address, user = { name = "", email = "automated", password = "" }, channelName = channelName, content = content, time = time }
+                            )
+                            Time.now
+                        )
+
+                    else
+                        ( model, Cmd.none )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        CommitMessage { address, user, channelName, content, time } ->
             let
                 message =
                     { user = user, content = content, time = time }
@@ -233,17 +415,17 @@ update msg model =
             ( { model | logs = error :: model.logs }, Cmd.none )
 
 
-createUser : Dict Address User -> Address -> Dict Address User
-createUser users address =
+createUser : Dict Email User -> User -> Dict Email User
+createUser users user =
     Dict.update
-        address
+        user.email
         (\maybeUser ->
             case maybeUser of
-                Just user ->
-                    Just user
+                Just u ->
+                    Just u
 
                 Nothing ->
-                    Just { name = address }
+                    Just user
         )
         users
 
@@ -280,7 +462,13 @@ userJoinChannel channels user channelToJoin =
 adminMessage : String -> ChannelName -> Cmd Msg
 adminMessage content channelName =
     Task.perform
-        (\_ -> AddMessage { user = "admin", channelName = channelName, content = content })
+        (\_ ->
+            AddMessage
+                { address = "automated"
+                , channelName = channelName
+                , content = content
+                }
+        )
         (Task.succeed ())
 
 
@@ -289,7 +477,7 @@ adminMessage content channelName =
 
 
 view : Model -> Document Msg
-view { address, connections, users, channels, logs } =
+view { address, connections, users, channels, logs, clients } =
     { title = "De-Slack - Server"
     , body =
         [ Html.toUnstyled <|
@@ -335,7 +523,7 @@ view { address, connections, users, channels, logs } =
                                         (List.map
                                             (\{ user, content, time } ->
                                                 ( time |> Time.posixToMillis |> String.fromInt
-                                                , Html.li [] [ Html.text <| user ++ ": " ++ content ]
+                                                , Html.li [] [ Html.text <| user.email ++ ": " ++ content ]
                                                 )
                                             )
                                             messages
@@ -352,6 +540,33 @@ view { address, connections, users, channels, logs } =
                                                         [ Html.text clientAddress ]
                                                 )
                                         )
+                                    ]
+                                )
+                            )
+                    )
+                , Html.text "Clients:"
+                , HtmlKeyed.ul
+                    []
+                    (clients
+                        |> Dict.toList
+                        |> List.map
+                            (\( clientAddress, clientState ) ->
+                                ( clientAddress
+                                , Html.li
+                                    []
+                                    [ case clientState of
+                                        Unauthenticated ->
+                                            Html.text <| "Unauthenticated: " ++ clientAddress
+
+                                        SignedUp { email } ->
+                                            Html.button
+                                                [ Attrs.type_ "button"
+                                                , Events.onClick <| ApproveUserSignUp clientAddress email
+                                                ]
+                                                [ Html.text <| "Approve user at email: " ++ email ]
+
+                                        Authenticated { email } ->
+                                            Html.text <| "Authenticated user email: " ++ email
                                     ]
                                 )
                             )

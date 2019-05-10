@@ -9,6 +9,7 @@ import Html.Styled.Attributes as Attrs
 import Html.Styled.Events as Events
 import Html.Styled.Keyed as HtmlKeyed
 import Json.Decode as Decode exposing (Decoder, Value)
+import Json.Encode as Encode
 import Set exposing (Set)
 import Time
 
@@ -29,12 +30,17 @@ main =
 
 type Model
     = Disconnected Address
-    | Connected ConnectedData
+    | Connected AuthState
+    | Authenticated AuthenticatedData
 
 
-type alias ConnectedData =
-    { serverAddress : Address
-    , channels : Dict ChannelName Channel
+type AuthState
+    = Login { email : String, password : String }
+    | SignUp { email : String, password : String, passwordVerify : String }
+
+
+type alias AuthenticatedData =
+    { channels : Dict ChannelName Channel
     , activeChannel : String
     , currentMessage : String
     }
@@ -49,6 +55,13 @@ type Msg
     | AddMessageFromServer Value
     | SendMessage
     | SetCurrentMessage String
+    | SwitchToSignUp
+    | SwitchToLogin
+    | SetAuthEmail String
+    | SetAuthPassword String
+    | SetAuthPasswordVerify String
+    | DoAuthenticate
+    | UserAuthenticated
 
 
 
@@ -109,6 +122,9 @@ decodeServerMessageHelper event =
             Decode.map AddMessageFromServer
                 (Decode.field "data" Decode.value)
 
+        "authenticated" ->
+            Decode.succeed UserAuthenticated
+
         _ ->
             Decode.fail <| "Unknown server event: " ++ event
 
@@ -126,6 +142,30 @@ port connectToServer : Address -> Cmd msg
 port sendMessage : Value -> Cmd msg
 
 
+port sendAuth : Value -> Cmd msg
+
+
+sendLogin : { email : String, password : String } -> Cmd msg
+sendLogin { email, password } =
+    Encode.object
+        [ ( "event", Encode.string "authLogin" )
+        , ( "email", Encode.string email )
+        , ( "password", Encode.string password )
+        ]
+        |> sendAuth
+
+
+sendSignUp : { email : String, password : String, passwordVerify : String } -> Cmd msg
+sendSignUp { email, password, passwordVerify } =
+    Encode.object
+        [ ( "event", Encode.string "authSignUp" )
+        , ( "email", Encode.string email )
+        , ( "password", Encode.string password )
+        , ( "passwordVerify", Encode.string passwordVerify )
+        ]
+        |> sendAuth
+
+
 
 ---- UPDATE ----
 
@@ -140,33 +180,66 @@ update msg model =
             ( model, connectToServer serverAddress )
 
         ( ConnectedToServer, Disconnected serverAddress ) ->
-            ( Connected
-                { serverAddress = serverAddress
-                , channels = Dict.empty
+            ( Connected <| Login { email = "", password = "" }
+            , Cmd.none
+            )
+
+        ( SwitchToSignUp, Connected (Login { email }) ) ->
+            ( Connected <| SignUp { email = email, password = "", passwordVerify = "" }, Cmd.none )
+
+        ( SwitchToLogin, Connected (SignUp { email }) ) ->
+            ( Connected <| Login { email = email, password = "" }, Cmd.none )
+
+        ( UpdateChannelStatus data, Authenticated authData ) ->
+            ( Authenticated { authData | channels = Chat.updateChannelStatus authData.channels data }
+            , Cmd.none
+            )
+
+        ( AddMessageFromServer data, Authenticated authData ) ->
+            ( Authenticated { authData | channels = Chat.addMessageToChannel authData.channels data }
+            , Cmd.none
+            )
+
+        ( SetCurrentMessage message, Authenticated authData ) ->
+            ( Authenticated { authData | currentMessage = message }
+            , Cmd.none
+            )
+
+        ( SendMessage, Authenticated ({ currentMessage, activeChannel } as authData) ) ->
+            ( Authenticated { authData | currentMessage = "" }
+            , sendMessage <| Chat.encodeUserMessage activeChannel currentMessage
+            )
+
+        ( SetAuthEmail email, Connected (Login { password }) ) ->
+            ( Connected <| Login { email = email, password = password }, Cmd.none )
+
+        ( SetAuthPassword password, Connected (Login { email }) ) ->
+            ( Connected <| Login { email = email, password = password }, Cmd.none )
+
+        ( SetAuthEmail email, Connected (SignUp { password, passwordVerify }) ) ->
+            ( Connected <| SignUp { email = email, password = password, passwordVerify = passwordVerify }, Cmd.none )
+
+        ( SetAuthPassword password, Connected (SignUp { email, passwordVerify }) ) ->
+            ( Connected <| SignUp { email = email, password = password, passwordVerify = passwordVerify }, Cmd.none )
+
+        ( SetAuthPasswordVerify passwordVerify, Connected (SignUp { email, password }) ) ->
+            ( Connected <| SignUp { email = email, password = password, passwordVerify = passwordVerify }, Cmd.none )
+
+        ( DoAuthenticate, Connected authState ) ->
+            case authState of
+                Login data ->
+                    ( model, sendLogin data )
+
+                SignUp data ->
+                    ( model, sendSignUp data )
+
+        ( UserAuthenticated, Connected authState ) ->
+            ( Authenticated
+                { channels = Dict.empty
                 , activeChannel = "general"
                 , currentMessage = ""
                 }
             , Cmd.none
-            )
-
-        ( UpdateChannelStatus data, Connected connectedData ) ->
-            ( Connected { connectedData | channels = Chat.updateChannelStatus connectedData.channels data }
-            , Cmd.none
-            )
-
-        ( AddMessageFromServer data, Connected connectedData ) ->
-            ( Connected { connectedData | channels = Chat.addMessageToChannel connectedData.channels data }
-            , Cmd.none
-            )
-
-        ( SetCurrentMessage message, Connected connectedData ) ->
-            ( Connected { connectedData | currentMessage = message }
-            , Cmd.none
-            )
-
-        ( SendMessage, Connected ({ currentMessage, activeChannel } as connectedData) ) ->
-            ( Connected { connectedData | currentMessage = "" }
-            , sendMessage <| Chat.encodeUserMessage activeChannel currentMessage
             )
 
         _ ->
@@ -195,7 +268,72 @@ view model =
                             []
                         ]
 
-                Connected { channels, currentMessage } ->
+                Connected authState ->
+                    case authState of
+                        Login { email, password } ->
+                            Html.form
+                                [ Events.onSubmit DoAuthenticate ]
+                                [ Html.text "login"
+                                , Html.input
+                                    [ Attrs.value email
+                                    , Attrs.placeholder "email"
+                                    , Attrs.autofocus True
+                                    , Events.onInput SetAuthEmail
+                                    ]
+                                    []
+                                , Html.input
+                                    [ Attrs.value password
+                                    , Attrs.placeholder "password"
+                                    , Attrs.type_ "password"
+                                    , Events.onInput SetAuthPassword
+                                    ]
+                                    []
+                                , Html.button
+                                    []
+                                    [ Html.text "login" ]
+                                , Html.button
+                                    [ Attrs.type_ "button"
+                                    , Events.onClick SwitchToSignUp
+                                    ]
+                                    [ Html.text "signup" ]
+                                ]
+
+                        SignUp { email, password, passwordVerify } ->
+                            Html.form
+                                [ Events.onSubmit DoAuthenticate ]
+                                [ Html.text "signup"
+                                , Html.input
+                                    [ Attrs.value email
+                                    , Attrs.placeholder "email"
+                                    , Attrs.autofocus True
+                                    , Events.onInput SetAuthEmail
+                                    ]
+                                    []
+                                , Html.input
+                                    [ Attrs.value password
+                                    , Attrs.placeholder "password"
+                                    , Attrs.type_ "password"
+                                    , Events.onInput SetAuthPassword
+                                    ]
+                                    []
+                                , Html.input
+                                    [ Attrs.value passwordVerify
+                                    , Attrs.placeholder "verify password"
+                                    , Attrs.type_ "password"
+                                    , Events.onInput SetAuthPasswordVerify
+                                    ]
+                                    []
+                                , Html.button
+                                    []
+                                    [ Html.text "signup" ]
+                                , Html.button
+                                    [ Attrs.type_ "button"
+                                    , Events.onClick SwitchToLogin
+                                    ]
+                                    [ Html.text "login" ]
+                                ]
+
+                Authenticated { channels, currentMessage } ->
                     Html.div
                         []
                         [ Html.text "Channels:"
@@ -221,7 +359,7 @@ view model =
                                                             , Html.li
                                                                 []
                                                                 [ Html.text <|
-                                                                    user
+                                                                    user.email
                                                                         ++ ": "
                                                                         ++ content
                                                                 ]

@@ -31,7 +31,7 @@ type alias ChannelName =
 
 
 type alias Message =
-    { user : Address
+    { user : User
     , content : String
     , time : Posix
     }
@@ -49,7 +49,10 @@ type alias Channels =
 
 
 type alias User =
-    { name : String }
+    { name : String
+    , email : String
+    , password : String
+    }
 
 
 encodeChannelStatus : Channel -> Value
@@ -98,11 +101,19 @@ encodeMessage channel { user, content, time } =
         [ ( "channel", Encode.string channel )
         , ( "message"
           , Encode.object
-                [ ( "user", Encode.string user )
+                [ ( "user", encodeUser user )
                 , ( "content", Encode.string content )
                 , ( "time", Encode.int <| Time.posixToMillis time )
                 ]
           )
+        ]
+
+
+encodeUser : User -> Value
+encodeUser { name, email } =
+    Encode.object
+        [ ( "name", Encode.string name )
+        , ( "email", Encode.string email )
         ]
 
 
@@ -113,10 +124,18 @@ decodeMessage =
         (Decode.field "channel" Decode.string)
         (Decode.field "message" <|
             Decode.map3 Message
-                (Decode.field "user" Decode.string)
+                (Decode.field "user" decodeUser)
                 (Decode.field "content" Decode.string)
                 (Decode.field "time" decodeTime)
         )
+
+
+decodeUser : Decoder User
+decodeUser =
+    Decode.map3 User
+        (Decode.field "name" Decode.string)
+        (Decode.field "email" Decode.string)
+        (Decode.succeed "")
 
 
 decodeTime : Decoder Posix
@@ -157,5 +176,10 @@ decodeUserMessage : Decoder ( ChannelName, String )
 decodeUserMessage =
     Decode.map2
         Tuple.pair
-        (Decode.field "channelName" Decode.string)
+        (Decode.field "channelName" decodeChannelName)
         (Decode.field "content" Decode.string)
+
+
+decodeChannelName : Decoder ChannelName
+decodeChannelName =
+    Decode.string

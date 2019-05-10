@@ -1,6 +1,6 @@
 {
   "name": "de-slack",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A decentralized chat app",
   "main": "index.js",
   "author": "Wolfgang Schuster <wolfadex@gmail.com>",

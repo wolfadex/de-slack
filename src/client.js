@@ -10,10 +10,11 @@ app.ports.connectToServer.subscribe(function(serverAddress) {
     console.log('Connected to the server');
     app.ports.connectedToServer.send(null);
     app.ports.sendMessage.subscribe(function(args) {
-      // client.rpc('message', args);
-      client.rpc('message', args, function(response) {
-        console.log('response', response);
-      });
+      client.rpc('message', args, function() {});
+    });
+    app.ports.sendAuth.subscribe(function(args) {
+      console.log('Authenticate', args);
+      client.rpc('authenticate', args, function() {});
     });
   });
   client.on('message', function(address, message, packet) {
